@@ -133,8 +133,6 @@ namespace Oxide.Plugins
                 
                 UpdateStatus();
 
-                PLUGIN.Puts($"{delta} | {nextUpdateBoost - Time.realtimeSinceStartup}");
-
                 if (currentStamina == 0f)
                     nextUpdate = Time.realtimeSinceStartup + staminaGoneDelay;
                 else
