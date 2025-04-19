@@ -9,7 +9,7 @@ namespace Oxide.Plugins
     public class AdvancedPlayerMetabolism : RustPlugin
     {
         [PluginReference]
-        private Plugin SimpleStatus;
+        private Plugin SimpleStatus, InjuriesAndDiseases;
 
         public static AdvancedPlayerMetabolism PLUGIN;
 
@@ -22,7 +22,12 @@ namespace Oxide.Plugins
             {
                 Puts($"You must have SimpleStatus installed to run {Name}.");
                 return;
-            }   
+            }
+
+            if (InjuriesAndDiseases == null || !InjuriesAndDiseases.IsLoaded)
+            {
+                Puts($"Support for broken legs disabled.");
+            }
 
             SimpleStatus?.CallHook("CreateStatus", PLUGIN, "Player_Stamina", new Dictionary<string, object>
             {
@@ -102,11 +107,15 @@ namespace Oxide.Plugins
             public float staminaCoreReplenishRatio = 1.5f;
             public float staminaMaxReplenishRatio = 0.5f;
 
+            public bool hasBrokenLeg = false;
+            public float nextBrokenLegUpdate;
+
             private void Awake()
             {
                 player = GetComponent<BasePlayer>();
                 nextUpdate = Time.realtimeSinceStartup + delay;
                 nextUpdateBoost = Time.realtimeSinceStartup + staminaGoneDelay;
+                nextBrokenLegUpdate = Time.realtimeSinceStartup + delay;
             }
 
             public void FixedUpdate()
@@ -117,19 +126,41 @@ namespace Oxide.Plugins
                     return;
                 }
 
-                var delta = nextUpdate - Time.realtimeSinceStartup;
+                if (player.IsSleeping() || player.IsDead()) return;
 
-                if (delta > 0)
+                var delta = nextUpdate - Time.realtimeSinceStartup;
+                var brokenLegDelta = nextBrokenLegUpdate - Time.realtimeSinceStartup;
+
+                if (delta > 0 || (hasBrokenLeg && brokenLegDelta > 0))
                 {
                     // this should be done to get better status pane updates
                     UpdateStatus();
                     return;
                 }
 
-                UpdateStamina(delay);
+                // we dont want to check too often
+                if (PLUGIN.InjuriesAndDiseases != null && brokenLegDelta <= 0)
+                {
+                    // if we are not invoking NoSprint, it has to be from another plugin.
+                    // the origin hooks had not been working
+                    hasBrokenLeg = !IsInvoking(nameof(NoSprint)) && player.HasPlayerFlag(BasePlayer.PlayerFlags.NoSprint);
+                    nextBrokenLegUpdate = Time.realtimeSinceStartup + 1f;
+                }
+
+
+                if (hasBrokenLeg)
+                {
+                    currentBoost = 0f;
+                    currentMaxBoost = 1f;
+                    currentStamina = 0f;
+                }
+                else
+                {
+                    UpdateStamina(delay);
+                    UpdateSprint();
+                }
                 
                 UpdatePermissions();
-                UpdateSprint();
                 
                 UpdateStatus();
 
