@@ -2,6 +2,8 @@
 using Oxide.Core.Plugins;
 using System.Collections.Generic;
 using UnityEngine;
+using System;
+using Newtonsoft.Json;
 
 namespace Oxide.Plugins
 {
@@ -12,6 +14,9 @@ namespace Oxide.Plugins
         private Plugin SimpleStatus, InjuriesAndDiseases;
 
         public static AdvancedPlayerMetabolism PLUGIN;
+
+        public static string perm_prefix = "advancedplayermetabolism.";
+        // public static string perm_use = perm_prefix + "use";
 
         #region plugin loading
         private void OnServerInitialized()
@@ -40,10 +45,9 @@ namespace Oxide.Plugins
                 ["progressColor"] = "0.5 0.3 0.6 0.9",
                 ["rank"] = -1
             });
-        }
 
-        void Loaded()
-        {
+            RegisterPermissions();
+            
             foreach (var player in BasePlayer.activePlayerList)
                 CreatePlayerStamina(player);
         }
@@ -52,6 +56,15 @@ namespace Oxide.Plugins
         {
             foreach (var player in BasePlayer.activePlayerList)
                 DestroyPlayerStamina(player);
+        }
+
+        void RegisterPermissions()
+        {
+            foreach (var permMaxStamina in config.permissions.max_stamina_perms)
+                permission.RegisterPermission(perm_prefix + permMaxStamina, this);
+
+            foreach (var permMaxBoost in config.permissions.max_boost_perms)
+                permission.RegisterPermission(perm_prefix + permMaxBoost, this);
         }
         #endregion
 
@@ -78,44 +91,68 @@ namespace Oxide.Plugins
                 player.gameObject.AddComponent<PlayerStamina>();
         }
 
+        #region Behavior
+
         public class PlayerStamina : MonoBehaviour
         {
             private BasePlayer player;
 
+            // if active, the current status is shown
             private bool statusActive = false;
-            private float nextUpdate;
-            private float delay = 0.2f;
-            private float staminaGoneDelay = 3f;
+            private float tickRate = 0.2f;
+            private float lastCheck = Time.realtimeSinceStartup;
 
-            // who ever logs in has only half stamina
-            public float currentStamina = 10f;
-            // should never be 0, otherwise it gets stuck
-            public float currentMaxStamina = 10f;
+            private StaminaSettings staminaCfg;
+            private BoostSettings boostCfg;
 
-            public float maxStamina = 20f;
+            // stamina
+            private float lastStaminaUsed;
 
-            public float currentBoost = 0f;
-            // should never be 0, otherwise it gets stuck
-            public float currentMaxBoost = 1.0f;
-            public float maxBoost = 2.5f;
+            private float currentStamina = 50f;
+            private float currentMaxStamina = 50f;
+            private float minStamina = 30f;
+            private float maxStamina = 100f;
 
-            public float nextUpdateBoost;
+            // boost
+            private float lastBoostUsed;
 
-            public float staminaCoreLossRatio = 1.0f;
-            public float staminaSwimLossMulti = 0.5f;
+            private float currentBoost = 0f;
+            private float currentMaxBoost = 50f;
+            private float minBoost = 30f;
+            private float maxBoost = 100f;
 
-            public float staminaCoreReplenishRatio = 1.5f;
-            public float staminaMaxReplenishRatio = 0.5f;
+            // broken leg
+            private float lastBrokenLegCheck;
+            private bool hasBrokenLeg = false;
 
-            public bool hasBrokenLeg = false;
-            public float nextBrokenLegUpdate;
+            private void UpdateMaxStamina()
+            {
+            }
+
+            private void UpdateMaxBoost()
+            {
+            }
+
+            public void Setup(Configuration config)
+            {
+                tickRate = config.tick_rate;
+                
+                staminaCfg = config.stamina_settings;
+                maxStamina = config.stamina_settings.max;
+                
+                boostCfg = config.boost_settings;
+                maxBoost = config.boost_settings.max;
+            }
 
             private void Awake()
             {
                 player = GetComponent<BasePlayer>();
-                nextUpdate = Time.realtimeSinceStartup + delay;
-                nextUpdateBoost = Time.realtimeSinceStartup + staminaGoneDelay;
-                nextBrokenLegUpdate = Time.realtimeSinceStartup + delay;
+
+                Setup(PLUGIN.config);
+
+                lastCheck = Time.realtimeSinceStartup;
+                lastStaminaUsed = Time.realtimeSinceStartup;
+                lastBoostUsed = Time.realtimeSinceStartup;
             }
 
             public void FixedUpdate()
@@ -128,25 +165,28 @@ namespace Oxide.Plugins
 
                 if (player.IsSleeping() || player.IsDead()) return;
 
-                var delta = nextUpdate - Time.realtimeSinceStartup;
-                var brokenLegDelta = nextBrokenLegUpdate - Time.realtimeSinceStartup;
+                var delta = Time.realtimeSinceStartup - lastCheck;
+                var brokenLegDelta = Time.realtimeSinceStartup - lastBrokenLegCheck;
 
-                if (delta > 0 || (hasBrokenLeg && brokenLegDelta > 0))
+                if (delta < tickRate)
+                    return;
+
+                if (hasBrokenLeg && brokenLegDelta < 1f)
                 {
+                    // FIMXE: really needed?
                     // this should be done to get better status pane updates
                     UpdateStatus();
                     return;
                 }
 
                 // we dont want to check too often
-                if (PLUGIN.InjuriesAndDiseases != null && brokenLegDelta <= 0)
+                if (PLUGIN.InjuriesAndDiseases != null && brokenLegDelta > 1f)
                 {
                     // if we are not invoking NoSprint, it has to be from another plugin.
                     // the origin hooks had not been working
                     hasBrokenLeg = !IsInvoking(nameof(NoSprint)) && player.HasPlayerFlag(BasePlayer.PlayerFlags.NoSprint);
-                    nextBrokenLegUpdate = Time.realtimeSinceStartup + 1f;
+                    lastBrokenLegCheck = Time.realtimeSinceStartup;
                 }
-
 
                 if (hasBrokenLeg)
                 {
@@ -156,18 +196,14 @@ namespace Oxide.Plugins
                 }
                 else
                 {
-                    UpdateStamina(delay);
+                    UpdateStamina(delta);
                     UpdateSprint();
                 }
                 
                 UpdatePermissions();
-                
                 UpdateStatus();
 
-                if (currentStamina == 0f)
-                    nextUpdate = Time.realtimeSinceStartup + staminaGoneDelay;
-                else
-                    nextUpdate = Time.realtimeSinceStartup + delay;
+                lastCheck = Time.realtimeSinceStartup;
             }
 
             #region Status and Permissions
@@ -236,38 +272,28 @@ namespace Oxide.Plugins
             {
                 if (player.IsRunning())
                 {
-                    // swimming consumes less stamina
-                    var swimmingMulti = player.IsSwimming() ? 0.5f : 1f;
                     if (currentBoost > 0)
-                    {
-                        UseBoost(delta * staminaCoreLossRatio * swimmingMulti);
-                    }
+                        UseBoost(delta * (player.IsSwimming() ? staminaCfg.swim_loss_rate : staminaCfg.loss_rate));
                     else
-                    {
-                        UseStamina(delta * staminaCoreLossRatio * swimmingMulti);
-                    }
+                        UseStamina(delta * (player.IsSwimming() ? boostCfg.swim_loss_rate : boostCfg.loss_rate));
                 }
                 else if (currentStamina != currentMaxStamina)
                 {
-                    ReplenishStamina(staminaCoreReplenishRatio * delta * (player.IsSwimming() || !player.IsDucked() ? 1f : 1.5f));
+                    ReplenishStamina(delta);
                 }
                 else if (currentMaxStamina != maxStamina)
                 {
-                    ReplenishStaminaMax(staminaMaxReplenishRatio * delta);
-                    nextUpdateBoost = Time.realtimeSinceStartup + staminaGoneDelay;
-                }
-                else if (nextUpdateBoost - Time.realtimeSinceStartup > 0)
-                {
-                    // this delays the boost when if was ever used before
-                    return;
+                    ReplenishStaminaMax(delta);
+                    // after stamina is filled, we delay the boost
+                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown_depleted;
                 }
                 else if (currentBoost != currentMaxBoost)
                 {
-                    ReplenishBoost(staminaCoreReplenishRatio * delta);
+                    ReplenishBoost(delta);
                 }
                 else if (currentMaxBoost != maxBoost)
                 {
-                    ReplenishBoostMax(staminaMaxReplenishRatio * delta);
+                    ReplenishBoostMax(delta);
                 }
             }
             
@@ -279,29 +305,28 @@ namespace Oxide.Plugins
                 {
                     currentStamina = 0f;
                 }
+
+                if (currentStamina == 0f)
+                    lastStaminaUsed = Time.realtimeSinceStartup + staminaCfg.cooldown_depleted;
+                else
+                    lastStaminaUsed = Time.realtimeSinceStartup + staminaCfg.cooldown;
             }
 
-            private void ReplenishStamina(float amount)
+            private void ReplenishStamina(float delta)
             {
-                float num = 1f + Mathf.InverseLerp(maxStamina * 0.5f, maxStamina, currentMaxStamina);
-                amount *= num;
-                amount = Mathf.Min(currentMaxStamina - currentStamina, amount);
-                float num2 = Mathf.Min(currentMaxStamina - staminaCoreReplenishRatio * amount, amount * staminaCoreReplenishRatio);
-                float num3 = Mathf.Min(currentMaxStamina - staminaCoreLossRatio * amount * 0.25f, amount * staminaCoreLossRatio * 0.25f);
+                // this delays when it was used before
+                if (lastStaminaUsed - Time.realtimeSinceStartup > 0) return;
 
-                currentMaxStamina = Mathf.Clamp(currentMaxStamina - num3, 0f, maxStamina);
-                currentStamina = Mathf.Clamp(currentStamina + num2 / staminaCoreReplenishRatio, 0f, currentMaxStamina);
+                currentMaxStamina = Mathf.Clamp(currentMaxStamina - (delta * staminaCfg.max_loss_rate), staminaCfg.min, maxStamina);
+                currentStamina = Mathf.Clamp(currentStamina + (delta * staminaCfg.replenish_rate), 0f, currentMaxStamina);
             }
 
-            private void ReplenishStaminaMax(float amount)
+            private void ReplenishStaminaMax(float delta)
             {
-                float num = 1f + Mathf.InverseLerp(maxStamina * 0.5f, maxStamina, currentMaxStamina);
-                amount *= num;
-                amount = Mathf.Min(maxStamina - currentMaxStamina, amount);
-                float num2 = Mathf.Min(currentMaxStamina - staminaMaxReplenishRatio * amount, amount * staminaMaxReplenishRatio);
+                float amount = delta * staminaCfg.max_replenish_rate;
 
-                currentMaxStamina = Mathf.Clamp(currentMaxStamina + num2, 1f, maxStamina);
-                currentStamina = Mathf.Clamp(currentStamina + num2, 0f, currentMaxStamina);
+                currentMaxStamina = Mathf.Clamp(currentMaxStamina + amount, 0f, maxStamina);
+                currentStamina = Mathf.Clamp(currentStamina + amount, 0f, currentMaxStamina);
             }
 
             #endregion Stamina
@@ -315,33 +340,164 @@ namespace Oxide.Plugins
                 {
                     currentBoost = 0f;
                 }
-                nextUpdateBoost = Time.realtimeSinceStartup + staminaGoneDelay;
+                if (currentBoost == 0f)
+                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown_depleted;
+                else
+                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown;
             }
-            private void ReplenishBoost(float amount)
+            private void ReplenishBoost(float delta)
             {
-                float num = 1f + Mathf.InverseLerp(maxBoost * 0.5f, maxBoost, currentMaxBoost);
-                amount *= num;
-                amount = Mathf.Min(currentMaxBoost - currentBoost, amount);
-                float num2 = Mathf.Min(currentMaxBoost - staminaCoreReplenishRatio * amount, amount * staminaCoreReplenishRatio);
-                float num3 = Mathf.Min(currentMaxBoost - staminaCoreLossRatio * amount * 0.25f, amount * staminaCoreLossRatio * 0.25f);
+                // this delays when it was used before
+                if (lastBoostUsed - Time.realtimeSinceStartup > 0) return;
 
-                currentMaxBoost = Mathf.Clamp(currentMaxBoost - num3, 1f, maxBoost);
-                currentBoost = Mathf.Clamp(currentBoost + num2 / staminaCoreReplenishRatio, 0f, currentMaxBoost);
+                currentMaxBoost = Mathf.Clamp(currentMaxBoost - (delta * boostCfg.max_loss_rate), boostCfg.min, maxBoost);
+                currentBoost = Mathf.Clamp(currentBoost + (delta * boostCfg.replenish_rate), 0f, currentMaxBoost);
             }
 
-            private void ReplenishBoostMax(float amount)
+            private void ReplenishBoostMax(float delta)
             {
-                float num = 1f + Mathf.InverseLerp(maxBoost * 0.5f, maxBoost, currentMaxBoost);
-                amount *= num;
-                amount = Mathf.Min(maxBoost - currentMaxBoost, amount);
-                float num2 = Mathf.Min(currentMaxBoost - staminaMaxReplenishRatio * amount, amount * staminaMaxReplenishRatio);
+                float amount = delta * boostCfg.max_replenish_rate;
 
-                currentMaxBoost = Mathf.Clamp(currentMaxBoost + num2, 0f, maxBoost);
-                currentBoost = Mathf.Clamp(currentBoost + num2, 0f, currentMaxBoost);
+                currentMaxBoost = Mathf.Clamp(currentMaxBoost + amount, 0f, maxBoost);
+                currentBoost = Mathf.Clamp(currentBoost + amount, 0f, currentMaxBoost);
             }
 
             #endregion Boost
         }
+
+        #endregion Behavior
+
+        #region Config
+        
+        private Configuration config = new Configuration();
+
+        #region Plugin Config
+
+        public class Configuration
+        {
+            [JsonProperty("tick rate to calculate stamina and boost loss/gain (lower = more performance impact)")]
+            public float tick_rate = 0.2f;
+
+            [JsonProperty("stamina settings")]
+            public StaminaSettings stamina_settings = new();
+
+            [JsonProperty("boost settings (requires MovementSpeed plugin)")]
+            public BoostSettings boost_settings = new();
+            
+            [JsonProperty("Permissions")]
+            public PermissionSettings permissions = new();
+
+            [JsonProperty("User experience")]
+            public UXSettings ux_settings = new();
+        }
+
+        public class StaminaSettings
+        {
+            [JsonProperty("Maximum value a player can reach")]
+            public float max = 100f;
+
+            [JsonProperty("Maximum value can deplete to this value (recommended: 20% of max value)")]
+            public float min = 20f;
+
+            [JsonProperty("loss rate per second when running")]
+            public float loss_rate = 2.0f;
+
+            [JsonProperty("loss rate per second when swimming")]
+            public float swim_loss_rate = 1.0f;
+
+            [JsonProperty("max value loss rate per second when recovering")]
+            public float max_loss_rate = 1.0f;
+            
+            [JsonProperty("replenish rate per second")]
+            public float replenish_rate = 4.0f;
+            
+            [JsonProperty("replenish rate of max value per second")]
+            public float max_replenish_rate = 1.0f;
+            
+            [JsonProperty("cooldown before replenishing starts")]
+            public float cooldown = 1.0f;
+            
+            [JsonProperty("cooldown before replenishing starts after it was fully depleted")]
+            public float cooldown_depleted = 5.0f;
+        }
+
+        public class BoostSettings : StaminaSettings
+        {
+            [JsonProperty("permission to use for sprint boost")]
+            public string sprint_boost_perm = "";
+
+            [JsonProperty("permission to use for swim boost")]
+            public string swim_boost_perm = "";
+        }
+
+        public class PermissionSettings
+        {
+            [JsonProperty("Permission based max stamina multiplier")]
+            public Dictionary<string, float> max_stamina_perms = new();
+
+            [JsonProperty("Permission based max boost multiplier")]
+            public Dictionary<string, float> max_boost_perms = new();
+        }
+
+        public class UXSettings
+        {
+
+        }
+
+        #endregion Plugin Config
+
+        protected override void LoadConfig()
+        {
+            base.LoadConfig();
+            try
+            {
+                config = Config.ReadObject<Configuration>();
+
+                if (config == null)
+                {
+                    throw new JsonException();
+                }
+                Puts($"Configuration file {Name}.json loaded");
+            }
+            catch (Exception ex)
+            {
+                Puts($"Configuration file {Name}.json is invalid; using defaults");
+                LoadDefaultConfig();
+            }
+            SaveConfig();
+        }
+
+        protected override void SaveConfig()
+        {
+            Puts($"Configuration changes saved to {Name}.json");
+            Config.WriteObject(config, true);
+        }
+
+        protected override void LoadDefaultConfig()
+        {
+            config = new Configuration();
+
+            config.boost_settings.max = 10f;
+            config.boost_settings.min = 2f;
+            config.boost_settings.loss_rate = 3f;
+            config.boost_settings.swim_loss_rate = 1f;
+            config.boost_settings.max_loss_rate = 1f;
+
+            config.boost_settings.replenish_rate = 2f;
+            config.boost_settings.max_replenish_rate = 0.5f;
+
+            config.boost_settings.cooldown = 2f;
+            config.boost_settings.cooldown_depleted = 4f;
+        }
+
+        #region Load/Save Config
+
+
+        #endregion Load/Save Config
+
+        #endregion Config
+
+        #region Localization
 
         protected override void LoadDefaultMessages()
         {
@@ -351,5 +507,7 @@ namespace Oxide.Plugins
                 ["title"] = "0%"
             }, this);
         }
+
+        #endregion Localization
     }
 }
