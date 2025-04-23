@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using System;
 using Newtonsoft.Json;
+using System.ComponentModel;
 
 namespace Oxide.Plugins
 {
@@ -16,7 +17,7 @@ namespace Oxide.Plugins
         public static AdvancedPlayerMetabolism PLUGIN;
 
         public static string perm_prefix = "advancedplayermetabolism.";
-        // public static string perm_use = perm_prefix + "use";
+        public static string perm_use = perm_prefix + "use";
 
         #region plugin loading
         private void OnServerInitialized()
@@ -52,40 +53,86 @@ namespace Oxide.Plugins
                 CreatePlayerStamina(player);
         }
 
-        void Unload()
+        private void Unload()
         {
             foreach (var player in BasePlayer.activePlayerList)
                 DestroyPlayerStamina(player);
         }
 
-        void RegisterPermissions()
+        private void RegisterPermissions()
         {
+            permission.RegisterPermission(perm_use, this);
+
             foreach (var permMaxStamina in config.permissions.max_stamina_perms)
-                permission.RegisterPermission(perm_prefix + permMaxStamina, this);
+                permission.RegisterPermission(perm_prefix + permMaxStamina.Key, this);
 
             foreach (var permMaxBoost in config.permissions.max_boost_perms)
-                permission.RegisterPermission(perm_prefix + permMaxBoost, this);
+                permission.RegisterPermission(perm_prefix + permMaxBoost.Key, this);
+
+            foreach (var permStaminaReplenish in config.permissions.stamina_replenish_perms)
+                permission.RegisterPermission(perm_prefix + permStaminaReplenish.Key, this);
+
+            foreach (var permBoostReplenish in config.permissions.boost_replenish_perms)
+                permission.RegisterPermission(perm_prefix + permBoostReplenish.Key, this);
         }
         #endregion
 
         #region Player Connections
         
-        void OnPlayerConnected(BasePlayer player) => CreatePlayerStamina(player);
+        private void OnPlayerConnected(BasePlayer player) => CreatePlayerStamina(player);
 
-        void OnPlayerDisconnected(BasePlayer player, string reason) => DestroyPlayerStamina(player);
+        private void OnPlayerDisconnected(BasePlayer player, string reason) => DestroyPlayerStamina(player);
 
         #endregion
 
-        void DestroyPlayerStamina(BasePlayer player)
+        #region Player Permissions
+
+        private void OnUserPermissionRevoked(string id, string permName)
+        {
+            Puts("permission revoked: " + permName);
+
+            var player = BasePlayer.FindByID(ulong.Parse(id));
+            if (player == null) return;
+
+            if (permName == perm_use)
+            {
+                DestroyPlayerStamina(player);
+                return;
+            }
+        }
+
+       private  void OnUserPermissionGranted(string id, string permName)
+        {
+            Puts("permission granted: " + permName);
+
+            var player = BasePlayer.FindByID(ulong.Parse(id));
+            if (player == null) return;
+
+            if (string.IsNullOrEmpty(permName) || !permName.StartsWith(perm_prefix)) return;
+
+            if (permName == perm_use)
+            {
+                CreatePlayerStamina(player);
+                return;
+            }
+        }
+        #endregion
+
+        private void DestroyPlayerStamina(BasePlayer player)
         {
             var result = player.GetComponent<PlayerStamina>();
             if (result == null) return;
 
             GameObject.Destroy(result);
+
+            PLUGIN.permission.RevokeUserPermission(player.UserIDString, config.boost_settings.sprint_boost_perm);
+            PLUGIN.permission.RevokeUserPermission(player.UserIDString, config.boost_settings.swim_boost_perm);
         }
 
-        void CreatePlayerStamina(BasePlayer player)
+        private void CreatePlayerStamina(BasePlayer player)
         {
+            if (!permission.UserHasPermission(player.UserIDString, perm_use)) return;
+
             var result = player.GetComponent<PlayerStamina>();
             if (result == null)
                 player.gameObject.AddComponent<PlayerStamina>();
@@ -99,56 +146,37 @@ namespace Oxide.Plugins
 
             // if active, the current status is shown
             private bool statusActive = false;
-            private float tickRate = 0.2f;
             private float lastCheck = Time.realtimeSinceStartup;
-
-            private StaminaSettings staminaCfg;
-            private BoostSettings boostCfg;
+            private float lastPlayerValueUpdate = Time.realtimeSinceStartup;
 
             // stamina
             private float lastStaminaUsed;
 
-            private float currentStamina = 50f;
-            private float currentMaxStamina = 50f;
-            private float minStamina = 30f;
-            private float maxStamina = 100f;
+            private float currentStamina;
+            private float currentMaxStamina;
+            private float maxStamina;
+            private float staminaReplenishMulti;
 
             // boost
             private float lastBoostUsed;
 
             private float currentBoost = 0f;
-            private float currentMaxBoost = 50f;
-            private float minBoost = 30f;
-            private float maxBoost = 100f;
+            private float currentMaxBoost;
+            private float maxBoost;
+            private float boostReplenishMulti;
 
             // broken leg
             private float lastBrokenLegCheck;
             private bool hasBrokenLeg = false;
 
-            private void UpdateMaxStamina()
-            {
-            }
-
-            private void UpdateMaxBoost()
-            {
-            }
-
-            public void Setup(Configuration config)
-            {
-                tickRate = config.tick_rate;
-                
-                staminaCfg = config.stamina_settings;
-                maxStamina = config.stamina_settings.max;
-                
-                boostCfg = config.boost_settings;
-                maxBoost = config.boost_settings.max;
-            }
-
             private void Awake()
             {
                 player = GetComponent<BasePlayer>();
 
-                Setup(PLUGIN.config);
+                InitPlayerValues();
+
+                currentStamina = maxStamina;
+                currentMaxStamina = maxStamina;
 
                 lastCheck = Time.realtimeSinceStartup;
                 lastStaminaUsed = Time.realtimeSinceStartup;
@@ -166,24 +194,19 @@ namespace Oxide.Plugins
                 if (player.IsSleeping() || player.IsDead()) return;
 
                 var delta = Time.realtimeSinceStartup - lastCheck;
+
+                if (delta < PLUGIN.config.tick_rate)
+                    return;
+
                 var brokenLegDelta = Time.realtimeSinceStartup - lastBrokenLegCheck;
 
-                if (delta < tickRate)
-                    return;
-
                 if (hasBrokenLeg && brokenLegDelta < 1f)
-                {
-                    // FIMXE: really needed?
-                    // this should be done to get better status pane updates
-                    UpdateStatus();
                     return;
-                }
 
                 // we dont want to check too often
                 if (PLUGIN.InjuriesAndDiseases != null && brokenLegDelta > 1f)
                 {
                     // if we are not invoking NoSprint, it has to be from another plugin.
-                    // the origin hooks had not been working
                     hasBrokenLeg = !IsInvoking(nameof(NoSprint)) && player.HasPlayerFlag(BasePlayer.PlayerFlags.NoSprint);
                     lastBrokenLegCheck = Time.realtimeSinceStartup;
                 }
@@ -191,25 +214,81 @@ namespace Oxide.Plugins
                 if (hasBrokenLeg)
                 {
                     currentBoost = 0f;
-                    currentMaxBoost = 1f;
+                    currentMaxBoost = PLUGIN.config.boost_settings.min;
                     currentStamina = 0f;
                 }
                 else
                 {
+                    // in case a permission has changed
+                    InitPlayerValues();
                     UpdateStamina(delta);
                     UpdateSprint();
                 }
                 
-                UpdatePermissions();
+                UpdateBoostPermissions();
                 UpdateStatus();
 
                 lastCheck = Time.realtimeSinceStartup;
             }
 
-            #region Status and Permissions
+            #region Player Values
+
+            private void InitPlayerValues()
+            {
+                maxStamina = GetMaxStamina();
+                maxBoost = GetMaxBoost();
+                staminaReplenishMulti = GetStaminaReplenishMulti();
+                boostReplenishMulti = GetBoostReplenishMulti();
+            }
+
+            private float GetMaxStamina()
+            {
+                var max = 1f;
+                foreach(var pk in PLUGIN.config.permissions.max_stamina_perms)
+                {
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, perm_prefix + pk.Key) && pk.Value > max) max = pk.Value;
+                }
+                return max * PLUGIN.config.stamina_settings.max;
+            }
+
+            private float GetMaxBoost()
+            {
+                var max = 1f;
+                foreach(var pk in PLUGIN.config.permissions.max_boost_perms)
+                {
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, perm_prefix + pk.Key) && pk.Value > max) max = pk.Value;
+                }
+                return max * PLUGIN.config.boost_settings.max;
+            }
+
+            private float GetStaminaReplenishMulti()
+            {
+                var max = 1f;
+                foreach(var pk in PLUGIN.config.permissions.stamina_replenish_perms)
+                {
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, perm_prefix + pk.Key) && pk.Value > max) max = pk.Value;
+                }
+                return max;
+            }
+
+            private float GetBoostReplenishMulti()
+            {
+                var max = 1f;
+                foreach(var pk in PLUGIN.config.permissions.boost_replenish_perms)
+                {
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, perm_prefix + pk.Key) && pk.Value > max) max = pk.Value;
+                }
+                return max;
+            }
+
+            #endregion
+
+            #region Status
 
             private void UpdateStatus()
             {
+                if (PLUGIN.SimpleStatus == null || !PLUGIN.SimpleStatus.IsLoaded) return;
+
                 if (player.GetMounted() != null)
                 {
                     PLUGIN.SimpleStatus?.CallHook("SetStatus", player.UserIDString, "Player_Stamina", 0);
@@ -226,24 +305,15 @@ namespace Oxide.Plugins
                 PLUGIN.SimpleStatus?.CallHook("SetStatusProperty", player.UserIDString, "Player_Stamina", new Dictionary<string, object>
                 {
                     ["progress"] = currentBoost > 0f ? currentBoost / maxBoost : currentStamina / maxStamina,
-                    ["title"] = currentBoost > 0f ? $"{currentBoost / maxBoost * 100f:F0}%" : $"{currentStamina / maxStamina * 100f:F0}%",
+                    ["title"] = currentBoost > 0f ? $"{currentBoost / PLUGIN.config.boost_settings.max * 100f:F0}%" : $"{currentStamina / PLUGIN.config.stamina_settings.max * 100f:F0}%",
                     ["iconColor"] = currentBoost > 0f ? "1 0 0 0.8" : "0.969 0.922 0.882 0.5",
                     ["progressColor"] = currentBoost > 0f ? "0.5 0.3 0.6 0.9" : "1 0.82353 0.44706 1",
                 });
             }
 
-            private void UpdatePermissions()
-            {
-                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, "movementspeed.run.3"))
-                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, "movementspeed.run.3");
-                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, "movementspeed.run.3"))
-                    PLUGIN.permission.GrantUserPermission(player.UserIDString, "movementspeed.run.3", null);
+            #endregion
 
-                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, "movementspeed.swim.3"))
-                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, "movementspeed.swim.3");
-                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, "movementspeed.swim.3"))
-                    PLUGIN.permission.GrantUserPermission(player.UserIDString, "movementspeed.swim.3", null);
-            }
+            #region NoSprint
 
             private void UpdateSprint()
             {
@@ -260,22 +330,18 @@ namespace Oxide.Plugins
                 }
             }
 
-            private void NoSprint()
-            {
-                player.SetPlayerFlag(BasePlayer.PlayerFlags.NoSprint, true);
-            }
+            private void NoSprint() => player.SetPlayerFlag(BasePlayer.PlayerFlags.NoSprint, true);
 
-            #endregion Status and Permissions
-
+            #endregion Status
 
             public void UpdateStamina(float delta)
             {
                 if (player.IsRunning())
                 {
                     if (currentBoost > 0)
-                        UseBoost(delta * (player.IsSwimming() ? staminaCfg.swim_loss_rate : staminaCfg.loss_rate));
+                        UseBoost(delta * (player.IsSwimming() ? PLUGIN.config.stamina_settings.swim_loss_rate : PLUGIN.config.stamina_settings.loss_rate));
                     else
-                        UseStamina(delta * (player.IsSwimming() ? boostCfg.swim_loss_rate : boostCfg.loss_rate));
+                        UseStamina(delta * (player.IsSwimming() ? PLUGIN.config.boost_settings.swim_loss_rate : PLUGIN.config.boost_settings.loss_rate));
                 }
                 else if (currentStamina != currentMaxStamina)
                 {
@@ -285,7 +351,7 @@ namespace Oxide.Plugins
                 {
                     ReplenishStaminaMax(delta);
                     // after stamina is filled, we delay the boost
-                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown_depleted;
+                    lastBoostUsed = Time.realtimeSinceStartup + PLUGIN.config.boost_settings.cooldown_depleted;
                 }
                 else if (currentBoost != currentMaxBoost)
                 {
@@ -307,9 +373,9 @@ namespace Oxide.Plugins
                 }
 
                 if (currentStamina == 0f)
-                    lastStaminaUsed = Time.realtimeSinceStartup + staminaCfg.cooldown_depleted;
+                    lastStaminaUsed = Time.realtimeSinceStartup + PLUGIN.config.stamina_settings.cooldown_depleted;
                 else
-                    lastStaminaUsed = Time.realtimeSinceStartup + staminaCfg.cooldown;
+                    lastStaminaUsed = Time.realtimeSinceStartup + PLUGIN.config.stamina_settings.cooldown;
             }
 
             private void ReplenishStamina(float delta)
@@ -317,13 +383,13 @@ namespace Oxide.Plugins
                 // this delays when it was used before
                 if (lastStaminaUsed - Time.realtimeSinceStartup > 0) return;
 
-                currentMaxStamina = Mathf.Clamp(currentMaxStamina - (delta * staminaCfg.max_loss_rate), staminaCfg.min, maxStamina);
-                currentStamina = Mathf.Clamp(currentStamina + (delta * staminaCfg.replenish_rate), 0f, currentMaxStamina);
+                currentMaxStamina = Mathf.Clamp(currentMaxStamina - (delta * PLUGIN.config.stamina_settings.max_loss_rate), PLUGIN.config.stamina_settings.min, maxStamina);
+                currentStamina = Mathf.Clamp(currentStamina + (delta * PLUGIN.config.stamina_settings.replenish_rate * staminaReplenishMulti), 0f, currentMaxStamina);
             }
 
             private void ReplenishStaminaMax(float delta)
             {
-                float amount = delta * staminaCfg.max_replenish_rate;
+                float amount = delta * PLUGIN.config.stamina_settings.max_replenish_rate * staminaReplenishMulti;
 
                 currentMaxStamina = Mathf.Clamp(currentMaxStamina + amount, 0f, maxStamina);
                 currentStamina = Mathf.Clamp(currentStamina + amount, 0f, currentMaxStamina);
@@ -341,25 +407,38 @@ namespace Oxide.Plugins
                     currentBoost = 0f;
                 }
                 if (currentBoost == 0f)
-                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown_depleted;
+                    lastBoostUsed = Time.realtimeSinceStartup + PLUGIN.config.boost_settings.cooldown_depleted;
                 else
-                    lastBoostUsed = Time.realtimeSinceStartup + boostCfg.cooldown;
+                    lastBoostUsed = Time.realtimeSinceStartup + PLUGIN.config.boost_settings.cooldown;
             }
             private void ReplenishBoost(float delta)
             {
                 // this delays when it was used before
                 if (lastBoostUsed - Time.realtimeSinceStartup > 0) return;
 
-                currentMaxBoost = Mathf.Clamp(currentMaxBoost - (delta * boostCfg.max_loss_rate), boostCfg.min, maxBoost);
-                currentBoost = Mathf.Clamp(currentBoost + (delta * boostCfg.replenish_rate), 0f, currentMaxBoost);
+                currentMaxBoost = Mathf.Clamp(currentMaxBoost - (delta * PLUGIN.config.boost_settings.max_loss_rate), PLUGIN.config.boost_settings.min, maxBoost);
+                currentBoost = Mathf.Clamp(currentBoost + (delta * PLUGIN.config.boost_settings.replenish_rate * boostReplenishMulti), 0f, currentMaxBoost);
             }
 
             private void ReplenishBoostMax(float delta)
             {
-                float amount = delta * boostCfg.max_replenish_rate;
+                float amount = delta * PLUGIN.config.boost_settings.max_replenish_rate * boostReplenishMulti;
 
                 currentMaxBoost = Mathf.Clamp(currentMaxBoost + amount, 0f, maxBoost);
                 currentBoost = Mathf.Clamp(currentBoost + amount, 0f, currentMaxBoost);
+            }
+
+            private void UpdateBoostPermissions()
+            {
+                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
+                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm);
+                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
+                    PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm, null);
+
+                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
+                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm);
+                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
+                    PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm, null);
             }
 
             #endregion Boost
@@ -424,19 +503,25 @@ namespace Oxide.Plugins
         public class BoostSettings : StaminaSettings
         {
             [JsonProperty("permission to use for sprint boost")]
-            public string sprint_boost_perm = "";
+            public string sprint_boost_perm = "movementspeed.run.3";
 
             [JsonProperty("permission to use for swim boost")]
-            public string swim_boost_perm = "";
+            public string swim_boost_perm = "movementspeed.swim.3";
         }
 
         public class PermissionSettings
         {
-            [JsonProperty("Permission based max stamina multiplier")]
+            [JsonProperty("Permission based max stamina multipliers")]
             public Dictionary<string, float> max_stamina_perms = new();
 
-            [JsonProperty("Permission based max boost multiplier")]
+            [JsonProperty("Permission based max boost multipliers")]
             public Dictionary<string, float> max_boost_perms = new();
+
+            [JsonProperty("Permission based stamina replenish multipliers")]
+            public Dictionary<string, float> stamina_replenish_perms = new();
+
+            [JsonProperty("Permission based boost replenish multipliers")]
+            public Dictionary<string, float> boost_replenish_perms = new();
         }
 
         public class UXSettings
@@ -488,6 +573,33 @@ namespace Oxide.Plugins
 
             config.boost_settings.cooldown = 2f;
             config.boost_settings.cooldown_depleted = 4f;
+
+            config.boost_settings.sprint_boost_perm = "movementspeed.run.3";
+            config.boost_settings.swim_boost_perm = "movementspeed.swim.3";
+
+            config.permissions.max_stamina_perms.Add("stamina.max1", 1.1f);
+            config.permissions.max_stamina_perms.Add("stamina.max2", 1.2f);
+            config.permissions.max_stamina_perms.Add("stamina.max3", 1.3f);
+            config.permissions.max_stamina_perms.Add("stamina.max4", 1.4f);
+            config.permissions.max_stamina_perms.Add("stamina.max5", 1.5f);
+
+            config.permissions.max_boost_perms.Add("boost.max1", 1.1f);
+            config.permissions.max_boost_perms.Add("boost.max2", 1.2f);
+            config.permissions.max_boost_perms.Add("boost.max3", 1.3f);
+            config.permissions.max_boost_perms.Add("boost.max4", 1.4f);
+            config.permissions.max_boost_perms.Add("boost.max5", 1.5f);
+
+            config.permissions.stamina_replenish_perms.Add("stamina.replenish1", 1.2f);
+            config.permissions.stamina_replenish_perms.Add("stamina.replenish2", 1.4f);
+            config.permissions.stamina_replenish_perms.Add("stamina.replenish3", 1.6f);
+            config.permissions.stamina_replenish_perms.Add("stamina.replenish4", 1.8f);
+            config.permissions.stamina_replenish_perms.Add("stamina.replenish5", 2.0f);
+
+            config.permissions.boost_replenish_perms.Add("boost.replenish1", 1.2f);
+            config.permissions.boost_replenish_perms.Add("boost.replenish2", 1.4f);
+            config.permissions.boost_replenish_perms.Add("boost.replenish3", 1.6f);
+            config.permissions.boost_replenish_perms.Add("boost.replenish4", 1.8f);
+            config.permissions.boost_replenish_perms.Add("boost.replenish5", 2.0f);
         }
 
         #region Load/Save Config
