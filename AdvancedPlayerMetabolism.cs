@@ -1,10 +1,19 @@
 ﻿using Oxide.Plugins;
 using Oxide.Core.Plugins;
+
+using Newtonsoft.Json;
+
+using System;
 using System.Collections.Generic;
 using UnityEngine;
-using System;
-using Newtonsoft.Json;
-using System.ComponentModel;
+
+/**
+ * TODO:
+ * - Add a simple UI, if SimpleStatus should not be used
+ * 
+ * FIXME:
+ * - when realoding the plugin, it can happen that PlayerStamina behavior is not reapplied (has to reload twice)
+ **/
 
 namespace Oxide.Plugins
 {
