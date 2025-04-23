@@ -13,6 +13,7 @@ using UnityEngine;
  * 
  * FIXME:
  * - when realoding the plugin, it can happen that PlayerStamina behavior is not reapplied (has to reload twice)
+ * - when assigning permissions to groups, behavior is not set up for players -> permission check in behavior might be better instead
  **/
 
 namespace Oxide.Plugins
@@ -98,8 +99,6 @@ namespace Oxide.Plugins
 
         private void OnUserPermissionRevoked(string id, string permName)
         {
-            Puts("permission revoked: " + permName);
-
             var player = BasePlayer.FindByID(ulong.Parse(id));
             if (player == null) return;
 
@@ -110,10 +109,8 @@ namespace Oxide.Plugins
             }
         }
 
-       private  void OnUserPermissionGranted(string id, string permName)
+        private void OnUserPermissionGranted(string id, string permName)
         {
-            Puts("permission granted: " + permName);
-
             var player = BasePlayer.FindByID(ulong.Parse(id));
             if (player == null) return;
 
@@ -348,9 +345,9 @@ namespace Oxide.Plugins
                 if (player.IsRunning())
                 {
                     if (currentBoost > 0)
-                        UseBoost(delta * (player.IsSwimming() ? PLUGIN.config.stamina_settings.swim_loss_rate : PLUGIN.config.stamina_settings.loss_rate));
+                        UseBoost(delta);
                     else
-                        UseStamina(delta * (player.IsSwimming() ? PLUGIN.config.boost_settings.swim_loss_rate : PLUGIN.config.boost_settings.loss_rate));
+                        UseStamina(delta);
                 }
                 else if (currentStamina != currentMaxStamina)
                 {
@@ -373,8 +370,10 @@ namespace Oxide.Plugins
             }
             
             #region Stamina
-            public void UseStamina(float amount)
+            public void UseStamina(float delta)
             {
+                var amount = delta * (player.IsSwimming() ? PLUGIN.config.boost_settings.swim_loss_rate : PLUGIN.config.boost_settings.loss_rate);
+
                 currentStamina -= amount;
                 if (currentStamina <= 0f)
                 {
@@ -385,6 +384,15 @@ namespace Oxide.Plugins
                     lastStaminaUsed = Time.realtimeSinceStartup + PLUGIN.config.stamina_settings.cooldown_depleted;
                 else
                     lastStaminaUsed = Time.realtimeSinceStartup + PLUGIN.config.stamina_settings.cooldown;
+
+                if (PLUGIN.config.stamina_settings.hydration.enabled)
+                    player.metabolism.hydration.MoveTowards(0f, delta * PLUGIN.config.stamina_settings.hydration.loss_rate);
+
+                if (PLUGIN.config.stamina_settings.heartrate.enabled)
+                    player.metabolism.heartrate.MoveTowards(1f, delta * PLUGIN.config.stamina_settings.heartrate.rate);
+
+                if (PLUGIN.config.stamina_settings.temperature.enabled)
+                    player.metabolism.temperature.MoveTowards(PLUGIN.config.stamina_settings.temperature.max, delta * PLUGIN.config.stamina_settings.temperature.rate);
             }
 
             private void ReplenishStamina(float delta)
@@ -408,8 +416,10 @@ namespace Oxide.Plugins
 
             #region Boost
 
-            public void UseBoost(float amount)
+            public void UseBoost(float delta)
             {
+                var amount = delta * (player.IsSwimming() ? PLUGIN.config.stamina_settings.swim_loss_rate : PLUGIN.config.stamina_settings.loss_rate);
+
                 currentBoost -= amount;
                 if (currentBoost <= 0f)
                 {
@@ -419,6 +429,15 @@ namespace Oxide.Plugins
                     lastBoostUsed = Time.realtimeSinceStartup + PLUGIN.config.boost_settings.cooldown_depleted;
                 else
                     lastBoostUsed = Time.realtimeSinceStartup + PLUGIN.config.boost_settings.cooldown;
+                
+                if (PLUGIN.config.boost_settings.hydration.enabled)
+                    player.metabolism.hydration.MoveTowards(0f, delta * PLUGIN.config.boost_settings.hydration.loss_rate);
+
+                if (PLUGIN.config.boost_settings.heartrate.enabled)
+                    player.metabolism.heartrate.MoveTowards(1f, delta * PLUGIN.config.boost_settings.heartrate.rate);
+
+                if (PLUGIN.config.boost_settings.temperature.enabled)
+                    player.metabolism.temperature.MoveTowards(PLUGIN.config.boost_settings.temperature.max, delta * PLUGIN.config.boost_settings.temperature.rate);
             }
             private void ReplenishBoost(float delta)
             {
@@ -507,6 +526,12 @@ namespace Oxide.Plugins
             
             [JsonProperty("cooldown before replenishing starts after it was fully depleted")]
             public float cooldown_depleted = 5.0f;
+
+            public HydrationSettings hydration = new();
+
+            public HeartrateSettings heartrate = new();
+
+            public TemperatureSetting temperature = new();
         }
 
         public class BoostSettings : StaminaSettings
@@ -516,6 +541,36 @@ namespace Oxide.Plugins
 
             [JsonProperty("permission to use for swim boost")]
             public string swim_boost_perm = "movementspeed.swim.3";
+        }
+
+        public class HeartrateSettings
+        {
+            [JsonProperty("change heartrate for players when running")]
+            public bool enabled = true;
+            
+            [JsonProperty("heartrate increased per second")]
+            public float rate = 0.2f;
+        }
+
+        public class HydrationSettings
+        {
+            [JsonProperty("players can loose hydration when running")]
+            public bool enabled = true;
+            
+            [JsonProperty("hydration loss per second")]
+            public float loss_rate = 0.1f;
+        }
+
+        public class TemperatureSetting
+        {
+            [JsonProperty("change heartrate for players when running")]
+            public bool enabled = true;
+            
+            [JsonProperty("target temperature value")]
+            public float max = 48.0f;
+            
+            [JsonProperty("increased temperature per second")]
+            public float rate = 3.0f;
         }
 
         public class PermissionSettings
@@ -585,6 +640,10 @@ namespace Oxide.Plugins
 
             config.boost_settings.sprint_boost_perm = "movementspeed.run.3";
             config.boost_settings.swim_boost_perm = "movementspeed.swim.3";
+
+            config.boost_settings.hydration.loss_rate = 0.2f;
+            config.boost_settings.heartrate.rate = 0.4f;
+            config.boost_settings.temperature.rate = 5f;
 
             config.permissions.max_stamina_perms.Add("stamina.max1", 1.1f);
             config.permissions.max_stamina_perms.Add("stamina.max2", 1.2f);
