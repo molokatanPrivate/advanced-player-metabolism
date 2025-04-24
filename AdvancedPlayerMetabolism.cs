@@ -5,6 +5,7 @@ using Newtonsoft.Json;
 
 using System;
 using System.Collections.Generic;
+
 using UnityEngine;
 
 /**
@@ -14,10 +15,6 @@ using UnityEngine;
  * 
  * TODO:
  * - Add a simple UI, if SimpleStatus should not be used
- * 
- * FIXME:
- * - when realoding the plugin, it can happen that PlayerStamina behavior is not reapplied (has to reload twice)
- * - when assigning permissions to groups, behavior is not set up for players -> permission check in behavior might be better instead
  * 
  * Optional:
  * - check if jump height can be increased with boost
