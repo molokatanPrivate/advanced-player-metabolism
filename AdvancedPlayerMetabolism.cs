@@ -8,12 +8,19 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /**
+ * Note:
+ * It is recommended to use a specific movement speed permission to not collide with other plugins.
+ * This plugin assigns and removes the permission as it likes.
+ * 
  * TODO:
  * - Add a simple UI, if SimpleStatus should not be used
  * 
  * FIXME:
  * - when realoding the plugin, it can happen that PlayerStamina behavior is not reapplied (has to reload twice)
  * - when assigning permissions to groups, behavior is not set up for players -> permission check in behavior might be better instead
+ * 
+ * Optional:
+ * - check if jump height can be increased with boost
  **/
 
 namespace Oxide.Plugins
@@ -34,39 +41,49 @@ namespace Oxide.Plugins
         {
             PLUGIN = this;
 
-            if (SimpleStatus == null || !SimpleStatus.IsLoaded)
-            {
-                Puts($"You must have SimpleStatus installed to run {Name}.");
-                return;
-            }
+            InitSimpleStatus();
 
             if (InjuriesAndDiseases == null || !InjuriesAndDiseases.IsLoaded)
             {
                 Puts($"Support for broken legs disabled.");
             }
 
-            SimpleStatus?.CallHook("CreateStatus", PLUGIN, "Player_Stamina", new Dictionary<string, object>
-            {
-                ["color"] = "0.969 0.922 0.882 0.055",
-                ["title"] = "0%",
-                ["titleColor"] = "1 1 1 0.8",
-                ["icon"] = "assets/icons/electric.png",
-                ["iconColor"] = "1 1 1 0.8",
-                ["progress"] = 0f,
-                ["progressColor"] = "0.5 0.3 0.6 0.9",
-                ["rank"] = -1
-            });
-
             RegisterPermissions();
             
-            foreach (var player in BasePlayer.activePlayerList)
-                CreatePlayerStamina(player);
+            NextTick(() =>
+            {
+                foreach (var player in BasePlayer.activePlayerList)
+                    CreatePlayerStamina(player);
+            });
         }
 
         private void Unload()
         {
             foreach (var player in BasePlayer.activePlayerList)
                 DestroyPlayerStamina(player);
+        }
+
+        private void InitSimpleStatus()
+        {
+            if (SimpleStatus == null || !SimpleStatus.IsLoaded)
+            {
+                Puts($"You must have SimpleStatus installed to run {Name}.");
+                return;
+            }
+            else
+            {
+                SimpleStatus?.CallHook("CreateStatus", PLUGIN, "Player_Stamina", new Dictionary<string, object>
+                {
+                    ["color"] = "0.969 0.922 0.882 0.055",
+                    ["title"] = "0%",
+                    ["titleColor"] = "1 1 1 0.8",
+                    ["icon"] = "assets/icons/electric.png",
+                    ["iconColor"] = "1 1 1 0.8",
+                    ["progress"] = 0f,
+                    ["progressColor"] = "0.5 0.3 0.6 0.9",
+                    ["rank"] = -1
+                });
+            }
         }
 
         private void RegisterPermissions()
@@ -93,35 +110,6 @@ namespace Oxide.Plugins
 
         private void OnPlayerDisconnected(BasePlayer player, string reason) => DestroyPlayerStamina(player);
 
-        #endregion
-
-        #region Player Permissions
-
-        private void OnUserPermissionRevoked(string id, string permName)
-        {
-            var player = BasePlayer.FindByID(ulong.Parse(id));
-            if (player == null) return;
-
-            if (permName == perm_use)
-            {
-                DestroyPlayerStamina(player);
-                return;
-            }
-        }
-
-        private void OnUserPermissionGranted(string id, string permName)
-        {
-            var player = BasePlayer.FindByID(ulong.Parse(id));
-            if (player == null) return;
-
-            if (string.IsNullOrEmpty(permName) || !permName.StartsWith(perm_prefix)) return;
-
-            if (permName == perm_use)
-            {
-                CreatePlayerStamina(player);
-                return;
-            }
-        }
         #endregion
 
         private void DestroyPlayerStamina(BasePlayer player)
@@ -199,6 +187,13 @@ namespace Oxide.Plugins
 
                 if (player.IsSleeping() || player.IsDead()) return;
 
+                if (!PLUGIN.permission.UserHasPermission(player.UserIDString, perm_use))
+                {
+                    NoPermission();
+                    lastCheck = Time.realtimeSinceStartup + 1f;
+                    return;
+                }
+
                 var delta = Time.realtimeSinceStartup - lastCheck;
 
                 if (delta < PLUGIN.config.tick_rate)
@@ -235,6 +230,16 @@ namespace Oxide.Plugins
                 UpdateStatus();
 
                 lastCheck = Time.realtimeSinceStartup;
+            }
+
+            private void NoPermission()
+            {
+                currentBoost = 0f;
+                
+                UpdateBoostPermissions();
+
+                PLUGIN.SimpleStatus?.CallHook("SetStatus", player.UserIDString, "Player_Stamina", 0);
+                statusActive = false;
             }
 
             #region Player Values
