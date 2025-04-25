@@ -1,5 +1,7 @@
 ﻿using Oxide.Plugins;
+
 using Oxide.Core.Plugins;
+using Oxide.Game.Rust.Cui;
 
 using Newtonsoft.Json;
 
@@ -26,7 +28,7 @@ namespace Oxide.Plugins
     public class AdvancedPlayerMetabolism : RustPlugin
     {
         [PluginReference]
-        private Plugin SimpleStatus, InjuriesAndDiseases;
+        private Plugin SimpleStatus, InjuriesAndDiseases, ImageLibrary;
 
         public static AdvancedPlayerMetabolism PLUGIN;
 
@@ -37,8 +39,15 @@ namespace Oxide.Plugins
         private void OnServerInitialized()
         {
             PLUGIN = this;
+            
+            if (PLUGIN.config.ux_settings.simpleStatus.enabled);
+                InitSimpleStatus();
 
-            InitSimpleStatus();
+            if (config.ux_settings.icon.enabled)
+            {
+                InitImage(config.ux_settings.icon.iconUrl);
+                InitImage(config.ux_settings.icon.boostIconUrl);
+            }
 
             if (InjuriesAndDiseases == null || !InjuriesAndDiseases.IsLoaded)
             {
@@ -64,22 +73,35 @@ namespace Oxide.Plugins
         {
             if (SimpleStatus == null || !SimpleStatus.IsLoaded)
             {
-                Puts($"You must have SimpleStatus installed to run {Name}.");
+                Puts($"You must have SimpleStatus installed to have a status bar.");
+                return;
+            }
+
+            SimpleStatus?.CallHook("CreateStatus", PLUGIN, "Player_Stamina", new Dictionary<string, object>
+            {
+                ["color"] = config.ux_settings.simpleStatus.color,
+                ["title"] = "0%",
+                ["titleColor"] = config.ux_settings.simpleStatus.titleColor,
+                ["icon"] = "assets/icons/electric.png",
+                ["iconColor"] = config.ux_settings.simpleStatus.iconColor,
+                ["progress"] = 0f,
+                ["progressColor"] = config.ux_settings.simpleStatus.progressColor,
+                ["rank"] = config.ux_settings.simpleStatus.rank
+            });
+        }
+
+        private void InitImage(string url)
+        {
+            if (string.IsNullOrEmpty(url) || !url.StartsWith("http")) return;
+
+            if (ImageLibrary == null || !ImageLibrary.IsLoaded)
+            {
+                Puts("Image Library has to be installed to support web images");
                 return;
             }
             else
             {
-                SimpleStatus?.CallHook("CreateStatus", PLUGIN, "Player_Stamina", new Dictionary<string, object>
-                {
-                    ["color"] = "0.969 0.922 0.882 0.055",
-                    ["title"] = "0%",
-                    ["titleColor"] = "1 1 1 0.8",
-                    ["icon"] = "assets/icons/electric.png",
-                    ["iconColor"] = "1 1 1 0.8",
-                    ["progress"] = 0f,
-                    ["progressColor"] = "0.5 0.3 0.6 0.9",
-                    ["rank"] = -1
-                });
+                ImageLibrary?.Call("AddImage", url, url);
             }
         }
 
@@ -116,14 +138,14 @@ namespace Oxide.Plugins
 
             GameObject.Destroy(result);
 
-            PLUGIN.permission.RevokeUserPermission(player.UserIDString, config.boost_settings.sprint_boost_perm);
-            PLUGIN.permission.RevokeUserPermission(player.UserIDString, config.boost_settings.swim_boost_perm);
+            permission.RevokeUserPermission(player.UserIDString, config.boost_settings.sprint_boost_perm);
+            permission.RevokeUserPermission(player.UserIDString, config.boost_settings.swim_boost_perm);
+            
+            CuiHelper.DestroyUi(player, "AdvancedPlayerMetabolismUI");
         }
 
         private void CreatePlayerStamina(BasePlayer player)
         {
-            if (!permission.UserHasPermission(player.UserIDString, perm_use)) return;
-
             var result = player.GetComponent<PlayerStamina>();
             if (result == null)
                 player.gameObject.AddComponent<PlayerStamina>();
@@ -184,12 +206,7 @@ namespace Oxide.Plugins
 
                 if (player.IsSleeping() || player.IsDead()) return;
 
-                if (!PLUGIN.permission.UserHasPermission(player.UserIDString, perm_use))
-                {
-                    NoPermission();
-                    lastCheck = Time.realtimeSinceStartup + 1f;
-                    return;
-                }
+                if (!CanUse()) return;
 
                 var delta = Time.realtimeSinceStartup - lastCheck;
 
@@ -229,14 +246,23 @@ namespace Oxide.Plugins
                 lastCheck = Time.realtimeSinceStartup;
             }
 
-            private void NoPermission()
+            private bool CanUse()
             {
+                if (PLUGIN.permission.UserHasPermission(player.UserIDString, perm_use)) return true;
+
                 currentBoost = 0f;
-                
-                UpdateBoostPermissions();
+
+                PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm);
+                PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm);
 
                 PLUGIN.SimpleStatus?.CallHook("SetStatus", player.UserIDString, "Player_Stamina", 0);
                 statusActive = false;
+                
+                CuiHelper.DestroyUi(player, "AdvancedPlayerMetabolismUI");
+
+                // we want to check for perms after a longer delay
+                lastCheck = Time.realtimeSinceStartup + 1f;
+                return false;
             }
 
             #region Player Values
@@ -295,7 +321,16 @@ namespace Oxide.Plugins
 
             private void UpdateStatus()
             {
-                if (PLUGIN.SimpleStatus == null || !PLUGIN.SimpleStatus.IsLoaded) return;
+                if (PLUGIN.config.ux_settings.simpleStatus.enabled)
+                    UpdateSimpleStatus();
+
+                if (PLUGIN.config.ux_settings.icon.enabled)
+                    UpdateIconStatus();
+            }
+
+            private void UpdateSimpleStatus()
+            {
+                if (PLUGIN.SimpleStatus == null || !PLUGIN.SimpleStatus.IsLoaded || !PLUGIN.config.ux_settings.simpleStatus.enabled) return;
 
                 if (player.GetMounted() != null)
                 {
@@ -314,9 +349,46 @@ namespace Oxide.Plugins
                 {
                     ["progress"] = currentBoost > 0f ? currentBoost / maxBoost : currentStamina / maxStamina,
                     ["title"] = currentBoost > 0f ? $"{currentBoost / PLUGIN.config.boost_settings.max * 100f:F0}%" : $"{currentStamina / PLUGIN.config.stamina_settings.max * 100f:F0}%",
-                    ["iconColor"] = currentBoost > 0f ? "1 0 0 0.8" : "0.969 0.922 0.882 0.5",
-                    ["progressColor"] = currentBoost > 0f ? "0.5 0.3 0.6 0.9" : "1 0.82353 0.44706 1",
+                    ["iconColor"] = currentBoost > 0f ? PLUGIN.config.ux_settings.simpleStatus.iconColor : PLUGIN.config.ux_settings.simpleStatus.boostIconColor,
+                    ["progressColor"] = currentBoost > 0f ? PLUGIN.config.ux_settings.simpleStatus.progressColor : PLUGIN.config.ux_settings.simpleStatus.boostProgressColor,
                 });
+            }
+
+            private void UpdateIconStatus()
+            {
+                if (PLUGIN.SimpleStatus == null || !PLUGIN.SimpleStatus.IsLoaded) return;
+
+                var settings = PLUGIN.config.ux_settings.icon;
+
+                if (player.GetMounted() != null)
+                {
+                    CuiHelper.DestroyUi(player, "AdvancedPlayerMetabolismUI");
+                    return;
+                }
+
+                string icon = currentBoost > 0f ? PLUGIN.config.ux_settings.icon.boostIconUrl : PLUGIN.config.ux_settings.icon.iconUrl;
+                string color = currentBoost > 0f ? PLUGIN.config.ux_settings.icon.boostColor : PLUGIN.config.ux_settings.icon.color;
+                CuiBox position = PLUGIN.config.ux_settings.icon.position;
+
+                CuiElementContainer builder = new CuiElementContainer();
+
+                builder.Add(new CuiElement { Name = "AdvancedPlayerMetabolismUI", Parent = "Hud", Components = { new CuiImageComponent { Color = PLUGIN.config.ux_settings.icon.backgroundColor }, new CuiRectTransformComponent { AnchorMin = position.AnchorMin, AnchorMax = position.AnchorMax, OffsetMin = position.OffsetMin, OffsetMax = position.OffsetMax } }, DestroyUi = "AdvancedPlayerMetabolismUI" });
+
+                if (icon.IsNumeric())
+                    builder.Add(new CuiElement { Name = "AdvancedPlayerMetabolismUI_Img", Parent = "AdvancedPlayerMetabolismUI", Components = { new CuiImageComponent { Color = color, ItemId = 1776460938, SkinId = Convert.ToUInt64(icon) }, new CuiRectTransformComponent { AnchorMin = "0 0", AnchorMax = "1 1", OffsetMin = "0 0", OffsetMax = "0 0" } } });
+                else if (icon.StartsWith("http"))
+                    builder.Add(new CuiElement { Name = "AdvancedPlayerMetabolismUI_Img", Parent = "AdvancedPlayerMetabolismUI", Components = { new CuiRawImageComponent { Color = color, Png = (string)PLUGIN.ImageLibrary?.Call("GetImage", icon) }, new CuiRectTransformComponent { AnchorMin = "0 0", AnchorMax = "1 1", OffsetMin = "0 0", OffsetMax = "0 0" } } });
+                else
+                    builder.Add(new CuiElement { Name = "AdvancedPlayerMetabolismUI_Img", Parent = "AdvancedPlayerMetabolismUI", Components = { new CuiImageComponent { Color = color, Sprite = icon }, new CuiRectTransformComponent { AnchorMin = "0 0", AnchorMax = "1 1", OffsetMin = "0 0", OffsetMax = "0 0" } } });
+
+                if (PLUGIN.config.ux_settings.icon.showText)
+                {
+                    CuiBox textPosition = PLUGIN.config.ux_settings.icon.textPosition;
+                    builder.Add(new CuiElement { Name = "AdvancedPlayerMetabolismUI_TextBox", Parent = "AdvancedPlayerMetabolismUI", Components = { new CuiImageComponent { Color = "0 0 0 0" }, new CuiRectTransformComponent { AnchorMin = textPosition.AnchorMin, AnchorMax = textPosition.AnchorMax, OffsetMin = textPosition.OffsetMin, OffsetMax = textPosition.OffsetMax } } });
+                    builder.Add(new CuiLabel { Text = { Text = currentBoost > 0f ? $"{currentBoost / PLUGIN.config.boost_settings.max * 100f:F0}%" : $"{currentStamina / PLUGIN.config.stamina_settings.max * 100f:F0}%", Font = "robotocondensed-bold.ttf", FontSize = PLUGIN.config.ux_settings.icon.fontSize, Align = TextAnchor.MiddleLeft, Color = color }, RectTransform = { AnchorMin = "0 0", AnchorMax = "1 1", OffsetMin = "0 0", OffsetMax = "0 0" } }, "AdvancedPlayerMetabolismUI_TextBox", "AdvancedPlayerMetabolismUI_Text" );
+                }
+                
+                CuiHelper.AddUi(player, builder);
             }
 
             #endregion
@@ -460,15 +532,30 @@ namespace Oxide.Plugins
 
             private void UpdateBoostPermissions()
             {
-                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
-                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm);
-                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
-                    PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm, null);
+                if (currentBoost > 0f)
+                {
+                    if (!PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
+                    {
+                        PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm, null);
+                    }
+                    
+                    if (!PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
+                    {
+                        PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm, null);
+                    }
+                }
+                else
+                {
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm))
+                    {
+                        PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.sprint_boost_perm);
+                    }
 
-                if (currentBoost == 0f && PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
-                    PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm);
-                else if (currentBoost > 0f && !PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
-                    PLUGIN.permission.GrantUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm, null);
+                    if (PLUGIN.permission.UserHasPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm))
+                    {
+                        PLUGIN.permission.RevokeUserPermission(player.UserIDString, PLUGIN.config.boost_settings.swim_boost_perm);
+                    }
+                }
             }
 
             #endregion Boost
@@ -592,7 +679,86 @@ namespace Oxide.Plugins
 
         public class UXSettings
         {
+            [JsonProperty("simple status configuration")]
+            public SimpleStatusConfig simpleStatus = new SimpleStatusConfig();
 
+            [JsonProperty("custom icon configuration")]
+            public CustomIcon icon = new CustomIcon();
+        }
+
+        public class SimpleStatusConfig
+        {
+            [JsonProperty("Enabled")]
+            public bool enabled = true;
+            
+            [JsonProperty("Color")]
+            public string color = "0.969 0.922 0.882 0.055";
+
+            [JsonProperty("Title color")]
+            public string titleColor = "1 1 1 0.8";
+
+            [JsonProperty("Icon color")]
+            public string iconColor = "1 1 1 0.8";
+
+            [JsonProperty("Boost icon color")]
+            public string boostIconColor = "0.969 0.922 0.882 0.5";
+
+            [JsonProperty("Progress color")]
+            public string progressColor = "0.5 0.3 0.6 0.9";
+
+            [JsonProperty("Boost progress color")]
+            public string boostProgressColor = "1 0.82353 0.44706 1";
+
+            [JsonProperty("Rank")]
+            public int rank = -1;
+        }
+
+        public class CustomIcon
+        {
+            [JsonProperty("Enabled")]
+            public bool enabled = true;
+
+            [JsonProperty("Background color")]
+            public string backgroundColor = "0 0 0 0";
+
+            [JsonProperty("Icon url")]
+            public string iconUrl = "https://www.dropbox.com/scl/fi/skr74lko6zcp95x67bncg/running.png?rlkey=lzc1khz4wapb2v89kxwaam5p9&dl=1";
+            
+            [JsonProperty("Icon color")]
+            public string color = "1 1 1 1";
+
+            [JsonProperty("Boost icon url")]
+            public string boostIconUrl = "https://www.dropbox.com/scl/fi/fl2bmgp9phyk36hd0w5zd/boost.png?rlkey=auz0u4kefpti35cnihvqw5hqx&dl=1";
+            
+            [JsonProperty("Boost icon color")]
+            public string boostColor = "0.0 0.682 0.937 1.0";
+
+            [JsonProperty("Position of the icon")]
+            public CuiBox position = new() { AnchorMin = "0.5 0", AnchorMax = "0.5 0", OffsetMin = "185 78", OffsetMax = "219 112" };
+
+            [JsonProperty("Show status text")]
+            public bool showText = true;
+            
+            [JsonProperty("Font size")]
+            public int fontSize = 24;
+
+            [JsonProperty("Position of the status text (relative to the icon)")]
+            public CuiBox textPosition = new() { AnchorMin = "1 0", AnchorMax = "1 1", OffsetMin = "0 0", OffsetMax = "75 0" };
+        }
+        
+        public class CuiBox
+        {
+            [JsonProperty("Anchor Min")]
+            public string AnchorMin = "0 0";
+
+            [JsonProperty("Anchor Max")]
+            public string AnchorMax = "1 1";
+
+            [JsonProperty("Offset Min")]
+            public string OffsetMin = "0 0";
+
+            [JsonProperty("Offset Max")]
+            public string OffsetMax = "0 0";
         }
 
         #endregion Plugin Config
