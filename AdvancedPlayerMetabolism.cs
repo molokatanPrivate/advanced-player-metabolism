@@ -722,13 +722,13 @@ namespace Oxide.Plugins
             public string backgroundColor = "0 0 0 0";
 
             [JsonProperty("Icon url")]
-            public string iconUrl = "https://www.dropbox.com/scl/fi/skr74lko6zcp95x67bncg/running.png?rlkey=lzc1khz4wapb2v89kxwaam5p9&dl=1";
+            public string iconUrl = "";
             
             [JsonProperty("Icon color")]
             public string color = "1 1 1 1";
 
             [JsonProperty("Boost icon url")]
-            public string boostIconUrl = "https://www.dropbox.com/scl/fi/fl2bmgp9phyk36hd0w5zd/boost.png?rlkey=auz0u4kefpti35cnihvqw5hqx&dl=1";
+            public string boostIconUrl = "";
             
             [JsonProperty("Boost icon color")]
             public string boostColor = "0.0 0.682 0.937 1.0";
