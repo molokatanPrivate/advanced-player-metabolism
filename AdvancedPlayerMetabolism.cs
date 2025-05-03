@@ -34,6 +34,7 @@ namespace Oxide.Plugins
 
         public static string perm_prefix = "advancedplayermetabolism.";
         public static string perm_use = perm_prefix + "use";
+        public static string perm_boost = perm_prefix + "boost";
 
         #region plugin loading
         private void OnServerInitialized()
@@ -108,6 +109,7 @@ namespace Oxide.Plugins
         private void RegisterPermissions()
         {
             permission.RegisterPermission(perm_use, this);
+            permission.RegisterPermission(perm_boost, this);
 
             foreach (var permMaxStamina in config.permissions.max_stamina_perms)
                 permission.RegisterPermission(perm_prefix + permMaxStamina.Key, this);
@@ -287,6 +289,8 @@ namespace Oxide.Plugins
 
             private float GetMaxBoost()
             {
+                if (!PLUGIN.permission.UserHasPermission(player.UserIDString, perm_boost)) return 0f;
+
                 var max = 1f;
                 foreach(var pk in PLUGIN.config.permissions.max_boost_perms)
                 {
@@ -307,6 +311,8 @@ namespace Oxide.Plugins
 
             private float GetBoostReplenishMulti()
             {
+                if (!PLUGIN.permission.UserHasPermission(player.UserIDString, perm_boost)) return 0f;
+
                 var max = 1f;
                 foreach(var pk in PLUGIN.config.permissions.boost_replenish_perms)
                 {
@@ -689,7 +695,7 @@ namespace Oxide.Plugins
         public class SimpleStatusConfig
         {
             [JsonProperty("Enabled")]
-            public bool enabled = true;
+            public bool enabled = false;
             
             [JsonProperty("Color")]
             public string color = "0.969 0.922 0.882 0.055";
